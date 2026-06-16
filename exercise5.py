@@ -1,11 +1,18 @@
 import heapq
 import math
+import os
 import random
 import statistics
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 SEED = 20260614
 Z_975 = 1.96
+PICS = "pics"
 
 
 def mean(values):
@@ -82,6 +89,106 @@ def print_table(title, headers, rows):
     for row in rows:
         print(" | ".join(str(row[i]).ljust(widths[i]) for i in range(len(row))))
     print()
+
+
+def tidy_axes(ax, title, xlabel, ylabel, grid_axis="both"):
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(axis=grid_axis, alpha=0.25, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
+def save_figure(fig, path):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def save_estimate_plot(records, path, title, ylabel, exact=None):
+    labels = [record["label"] for record in records]
+    estimates = [record["estimate"] for record in records]
+    lower = [record["estimate"] - record["low"] for record in records]
+    upper = [record["high"] - record["estimate"] for record in records]
+    x_positions = list(range(len(records)))
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.8))
+    ax.errorbar(
+        x_positions,
+        estimates,
+        yerr=[lower, upper],
+        fmt="o",
+        markersize=6,
+        capsize=4,
+        color="#315f8c",
+    )
+    if exact is not None:
+        ax.axhline(exact, color="#9b3d3d", linewidth=1.4, linestyle="--", label="Exact")
+        ax.legend(frameon=False)
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(labels, rotation=15, ha="right")
+    tidy_axes(ax, title, "Method", ylabel, grid_axis="y")
+    save_figure(fig, path)
+
+
+def save_variance_reduction_plot(records, path, title):
+    labels = [record["label"] for record in records]
+    values = [record["vr"] for record in records]
+    x_positions = list(range(len(records)))
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.8))
+    ax.bar(x_positions, values, width=0.62, color="#689f76")
+    ax.axhline(1.0, color="#444444", linewidth=1.0, linestyle="--")
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(labels, rotation=15, ha="right")
+    ax.set_ylim(bottom=0.0)
+    tidy_axes(ax, title, "Method", "Variance reduction", grid_axis="y")
+    save_figure(fig, path)
+
+
+def save_lambda_plot(records, path):
+    lambdas = [record["lambda"] for record in records]
+    vrs = [record["vr"] for record in records]
+
+    fig, ax = plt.subplots(figsize=(8, 4.8))
+    ax.plot(lambdas, vrs, marker="o", color="#315f8c")
+    ax.axhline(1.0, color="#444444", linewidth=1.0, linestyle="--")
+    tidy_axes(
+        ax,
+        "Importance sampling for the integral",
+        "lambda",
+        "Variance reduction vs crude",
+    )
+    save_figure(fig, path)
+
+
+def save_tail_vr_plot(records, path):
+    grouped = {}
+    for record in records:
+        key = (record["a"], record["sigma2"])
+        grouped.setdefault(key, []).append(record)
+
+    fig, ax = plt.subplots(figsize=(8.5, 5))
+    for (a, sigma2), group in sorted(grouped.items()):
+        group = sorted(group, key=lambda record: record["n"])
+        sample_sizes = [record["n"] for record in group]
+        vrs = [record["vr"] for record in group]
+        ax.plot(sample_sizes, vrs, marker="o", linewidth=1.5, label=f"a={a:g}, sigma^2={sigma2:g}")
+
+    ax.axhline(1.0, color="#444444", linewidth=1.0, linestyle="--")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    tidy_axes(
+        ax,
+        "Normal-tail importance sampling",
+        "Sample size",
+        "Variance reduction vs crude",
+    )
+    ax.legend(frameon=False, fontsize=8, ncols=2)
+    save_figure(fig, path)
 
 
 # parts 1-4: integral of exp(x) from 0 to 1
@@ -201,6 +308,29 @@ def part1_to_4_integral():
         rows,
     )
 
+    plot_records = [
+        {
+            "label": name,
+            "estimate": summary["estimate"],
+            "low": summary["low"],
+            "high": summary["high"],
+            "vr": vr,
+        }
+        for name, summary, vr, _ in methods
+    ]
+    save_estimate_plot(
+        plot_records,
+        os.path.join(PICS, "ex5_parts1_4_integral_estimates.png"),
+        "Integral estimates with 95% intervals",
+        "Estimate",
+        exact=exact,
+    )
+    save_variance_reduction_plot(
+        plot_records,
+        os.path.join(PICS, "ex5_parts1_4_variance_reduction.png"),
+        "Variance reduction for the integral",
+    )
+
     return {
         "exact": exact,
         "crude_variance": crude_variance,
@@ -300,6 +430,15 @@ def part5_blocking_control_variate():
             "1.000000",
         ]
     ]
+    plot_records = [
+        {
+            "label": "Crude",
+            "estimate": crude["estimate"],
+            "low": crude["low"],
+            "high": crude["high"],
+            "vr": 1.0,
+        }
+    ]
 
     for name, zs, expected_z in controls:
         c, ys = apply_control_variate(xs, zs, expected_z)
@@ -317,6 +456,15 @@ def part5_blocking_control_variate():
                 fmt(vr),
             ]
         )
+        plot_records.append(
+            {
+                "label": name,
+                "estimate": summary["estimate"],
+                "low": summary["low"],
+                "high": summary["high"],
+                "vr": vr,
+            }
+        )
 
     print_table(
         "Part 5: control variates for blocking simulation",
@@ -331,6 +479,17 @@ def part5_blocking_control_variate():
             "VR",
         ],
         rows,
+    )
+    save_estimate_plot(
+        plot_records,
+        os.path.join(PICS, "ex5_part5_control_variate_estimates.png"),
+        "Blocking estimates with control variates",
+        "Blocked fraction",
+    )
+    save_variance_reduction_plot(
+        plot_records,
+        os.path.join(PICS, "ex5_part5_control_variate_vr.png"),
+        "Control-variate variance reduction",
     )
 
 
@@ -421,6 +580,33 @@ def part6_common_random_numbers():
         ["Experiment", "Mean D", "SD of D", "95% CI", "VR"],
         rows,
     )
+    plot_records = [
+        {
+            "label": "Independent",
+            "estimate": ind["estimate"],
+            "low": ind["low"],
+            "high": ind["high"],
+            "vr": 1.0,
+        },
+        {
+            "label": "Common random numbers",
+            "estimate": crn["estimate"],
+            "low": crn["low"],
+            "high": crn["high"],
+            "vr": vr,
+        },
+    ]
+    save_estimate_plot(
+        plot_records,
+        os.path.join(PICS, "ex5_part6_crn_estimates.png"),
+        "Common random numbers comparison",
+        "Difference in blocked fraction",
+    )
+    save_variance_reduction_plot(
+        plot_records,
+        os.path.join(PICS, "ex5_part6_crn_vr.png"),
+        "CRN variance reduction",
+    )
 
 
 # part 7: importance sampling for normal tail probs
@@ -457,6 +643,7 @@ def is_normal_tail(rng, a, n, sigma2):
 def part7_normal_importance_sampling():
     rng = random.Random(SEED + 8)
     rows = []
+    plot_records = []
     sample_sizes = [1_000, 10_000, 100_000]
     sigma2_values = [0.5, 1.0, 2.0]
 
@@ -485,6 +672,8 @@ def part7_normal_importance_sampling():
             for sigma2 in sigma2_values:
                 est, sd, low, high, obs_var = is_normal_tail(rng, a, n, sigma2)
                 vr = exact_crude_var / obs_var if obs_var > 0 else math.inf
+                if math.isfinite(vr) and vr > 0.0:
+                    plot_records.append({"a": a, "n": n, "sigma2": sigma2, "vr": vr})
                 rows.append(
                     [
                         fmt(a, 1),
@@ -503,6 +692,10 @@ def part7_normal_importance_sampling():
         "Part 7: normal tail probability",
         ["a", "n", "Method", "sigma^2", "Exact", "Estimate", "95% CI", "Obs. SD", "VR"],
         rows,
+    )
+    save_tail_vr_plot(
+        plot_records,
+        os.path.join(PICS, "ex5_part7_normal_tail_vr.png"),
     )
 
 
@@ -543,6 +736,7 @@ def part8_integral_importance_sampling():
     crude_obs_var = (math.e**2 - 1.0) / 2.0 - exact**2
     lambdas = [-2.0, -1.0, -0.5, 0.0, 0.1, 0.5, 1.0, 2.0, 5.0]
     rows = []
+    plot_records = []
     best = None
 
     for lam in lambdas:
@@ -551,6 +745,8 @@ def part8_integral_importance_sampling():
         if best is None or obs_var < best["obs_var"]:
             best = {"lambda": lam, "obs_var": obs_var, "estimate": est}
 
+        if math.isfinite(vr) and vr > 0.0:
+            plot_records.append({"lambda": lam, "vr": vr})
         rows.append(
             [
                 fmt(lam, 1),
@@ -576,6 +772,10 @@ def part8_integral_importance_sampling():
         ],
         rows,
     )
+    save_lambda_plot(
+        plot_records,
+        os.path.join(PICS, "ex5_part8_integral_lambda_vr.png"),
+    )
     print(
         f"Best lambda in this run: {best['lambda']:.1f}. "
         "The value lambda = -1 makes the truncated exponential density "
@@ -585,9 +785,11 @@ def part8_integral_importance_sampling():
 
 
 def main():
+    os.makedirs(PICS, exist_ok=True)
     print("Exercise 5 - variance reduction")
     print("================================")
     print(f"Random seed: {SEED}")
+    print(f"Plots folder: {PICS}")
     print()
 
     part1_to_4_integral()

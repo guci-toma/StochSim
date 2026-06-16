@@ -1,10 +1,12 @@
-import importlib.util
 import math
 import os
 import random
 import statistics
-import struct
-import zlib
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 SEED = 20260614
@@ -124,215 +126,142 @@ def total_variation(empirical, exact):
     return 0.5 * sum(abs(a - b) for a, b in zip(empirical, exact))
 
 
-# small png plot helpers
+# plotting
 
 
-class Canvas:
-    def __init__(self, width=900, height=600, bg=(255, 255, 255)):
-        self.width = width
-        self.height = height
-        self.pixels = bytearray(bg * (width * height))
-
-    def set_pixel(self, x, y, color):
-        x = int(x)
-        y = int(y)
-        if 0 <= x < self.width and 0 <= y < self.height:
-            i = 3 * (y * self.width + x)
-            self.pixels[i : i + 3] = bytes(color)
-
-    def line(self, x0, y0, x1, y1, color, width=1):
-        x0 = int(round(x0))
-        y0 = int(round(y0))
-        x1 = int(round(x1))
-        y1 = int(round(y1))
-        dx = abs(x1 - x0)
-        dy = -abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx + dy
-        while True:
-            for ox in range(-(width // 2), width // 2 + 1):
-                for oy in range(-(width // 2), width // 2 + 1):
-                    self.set_pixel(x0 + ox, y0 + oy, color)
-            if x0 == x1 and y0 == y1:
-                break
-            e2 = 2 * err
-            if e2 >= dy:
-                err += dy
-                x0 += sx
-            if e2 <= dx:
-                err += dx
-                y0 += sy
-
-    def rect(self, x0, y0, x1, y1, color):
-        x0, x1 = sorted((int(round(x0)), int(round(x1))))
-        y0, y1 = sorted((int(round(y0)), int(round(y1))))
-        x0 = max(0, min(self.width - 1, x0))
-        x1 = max(0, min(self.width - 1, x1))
-        y0 = max(0, min(self.height - 1, y0))
-        y1 = max(0, min(self.height - 1, y1))
-        for y in range(y0, y1 + 1):
-            start = 3 * (y * self.width + x0)
-            end = 3 * (y * self.width + x1)
-            self.pixels[start : end + 3] = bytes(color) * (x1 - x0 + 1)
-
-    def save(self, path):
-        rows = []
-        stride = self.width * 3
-        for y in range(self.height):
-            start = y * stride
-            rows.append(b"\x00" + bytes(self.pixels[start : start + stride]))
-        raw = b"".join(rows)
-
-        def chunk(kind, data):
-            return (
-                struct.pack(">I", len(data))
-                + kind
-                + data
-                + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-            )
-
-        png = b"\x89PNG\r\n\x1a\n"
-        png += chunk(
-            b"IHDR",
-            struct.pack(">IIBBBBB", self.width, self.height, 8, 2, 0, 0, 0),
-        )
-        png += chunk(b"IDAT", zlib.compress(raw, 9))
-        png += chunk(b"IEND", b"")
-        with open(path, "wb") as f:
-            f.write(png)
+def tidy_axes(ax, title, xlabel, ylabel, grid_axis="both"):
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(axis=grid_axis, alpha=0.25, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
 
-def mapper(xmin, xmax, ymin, ymax, width=900, height=600):
-    left, right, top, bottom = 60, 30, 35, 55
-    pw = width - left - right
-    ph = height - top - bottom
-
-    def f(x, y):
-        px = left + (x - xmin) / (xmax - xmin) * pw
-        py = height - bottom - (y - ymin) / (ymax - ymin) * ph
-        return px, py
-
-    return f, left, right, top, bottom
+def save_figure(fig, path):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
 
 
-def save_grouped_bar_plot(series_a, series_b, path):
-    canvas = Canvas()
-    n = len(series_a)
-    ymax = max(max(series_a), max(series_b)) * 1.15
-    mp, left, right, top, bottom = mapper(-0.5, n - 0.5, 0.0, ymax)
-    canvas.line(left, canvas.height - bottom, canvas.width - right, canvas.height - bottom, (80, 80, 80), 2)
-    canvas.line(left, top, left, canvas.height - bottom, (80, 80, 80), 2)
-    for i, (a, b) in enumerate(zip(series_a, series_b)):
-        x0, y0 = mp(i - 0.35, 0.0)
-        x1, y1 = mp(i - 0.05, a)
-        canvas.rect(x0, y1, x1, y0, (45, 110, 190))
-        x0, y0 = mp(i + 0.05, 0.0)
-        x1, y1 = mp(i + 0.35, b)
-        canvas.rect(x0, y1, x1, y0, (220, 90, 60))
-    canvas.save(path)
+def downsample_pair(xs, ys, max_points):
+    if len(xs) <= max_points:
+        return xs, ys
+    step = math.ceil(len(xs) / max_points)
+    return xs[::step], ys[::step]
 
 
-def save_heatmap(states, probs, path, m=10):
-    canvas = Canvas(700, 700)
-    left, top = 80, 60
-    cell = 52
-    max_p = max(probs)
-    prob_by_state = dict(zip(states, probs))
-    for i in range(m + 1):
-        for j in range(m + 1):
-            x0 = left + i * cell
-            y0 = top + (m - j) * cell
-            if (i, j) in prob_by_state:
-                level = int(255 * prob_by_state[(i, j)] / max_p)
-                color = (255 - level // 2, 255 - level, 255)
-            else:
-                color = (235, 235, 235)
-            canvas.rect(x0, y0, x0 + cell - 2, y0 + cell - 2, color)
-            canvas.line(x0, y0, x0 + cell - 2, y0, (180, 180, 180), 1)
-            canvas.line(x0, y0, x0, y0 + cell - 2, (180, 180, 180), 1)
-    canvas.save(path)
+def save_grouped_bar_plot(labels, series_a, series_b, path, title):
+    x_positions = list(range(len(labels)))
+    bar_width = 0.38
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.bar(
+        [x - bar_width / 2 for x in x_positions],
+        series_a,
+        width=bar_width,
+        label="Empirical",
+        color="#3b6ea8",
+    )
+    ax.bar(
+        [x + bar_width / 2 for x in x_positions],
+        series_b,
+        width=bar_width,
+        label="Exact",
+        color="#d76f45",
+    )
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(labels)
+    ax.set_ylim(bottom=0.0)
+    tidy_axes(ax, title, "State", "Probability", grid_axis="y")
+    ax.legend(frameon=False)
+    save_figure(fig, path)
 
 
-def save_line_plot(values, path):
-    canvas = Canvas()
-    if len(values) > 5000:
-        step = len(values) // 5000
-        values = values[::step]
-    ymin = min(values)
-    ymax = max(values)
-    pad = 0.08 * (ymax - ymin) if ymax > ymin else 1.0
-    mp, left, right, top, bottom = mapper(0, len(values) - 1, ymin - pad, ymax + pad)
-    canvas.line(left, canvas.height - bottom, canvas.width - right, canvas.height - bottom, (80, 80, 80), 2)
-    canvas.line(left, top, left, canvas.height - bottom, (80, 80, 80), 2)
-    prev = None
-    for i, y in enumerate(values):
-        px, py = mp(i, y)
-        if prev:
-            canvas.line(prev[0], prev[1], px, py, (45, 110, 190), 1)
-        prev = (px, py)
-    canvas.save(path)
+def save_heatmap(states, probs, path, m=10, title="State probabilities"):
+    grid = [[float("nan") for _ in range(m + 1)] for _ in range(m + 1)]
+    for (i, j), prob in zip(states, probs):
+        grid[j][i] = prob
+
+    cmap = plt.get_cmap("Blues").copy()
+    cmap.set_bad("#eeeeee")
+
+    fig, ax = plt.subplots(figsize=(6.4, 5.8))
+    image = ax.imshow(
+        grid,
+        origin="lower",
+        extent=(-0.5, m + 0.5, -0.5, m + 0.5),
+        cmap=cmap,
+        vmin=0.0,
+        aspect="equal",
+    )
+    ax.set_xticks(range(m + 1))
+    ax.set_yticks(range(m + 1))
+    tidy_axes(ax, title, "i", "j", grid_axis="both")
+    fig.colorbar(image, ax=ax, label="Probability")
+    save_figure(fig, path)
 
 
-def save_histogram(values, path, bins=60):
-    canvas = Canvas()
+def save_line_plot(values, path, title, ylabel, max_points=5000):
+    xs = list(range(len(values)))
+    xs, ys = downsample_pair(xs, values, max_points)
+
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+    ax.plot(xs, ys, color="#3b6ea8", linewidth=0.9)
+    tidy_axes(ax, title, "MCMC iteration after burn-in", ylabel)
+    save_figure(fig, path)
+
+
+def save_histogram(values, path, title, xlabel, bins=60):
     xmin = quantile(values, 0.005)
     xmax = quantile(values, 0.995)
     if xmax <= xmin:
         xmax = xmin + 1.0
-    width = (xmax - xmin) / bins
-    counts = [0] * bins
-    for x in values:
-        if xmin <= x <= xmax:
-            idx = min(bins - 1, int((x - xmin) / width))
-            counts[idx] += 1
-    ymax = max(counts) * 1.15
-    mp, left, right, top, bottom = mapper(xmin, xmax, 0.0, ymax)
-    canvas.line(left, canvas.height - bottom, canvas.width - right, canvas.height - bottom, (80, 80, 80), 2)
-    canvas.line(left, top, left, canvas.height - bottom, (80, 80, 80), 2)
-    for i, count in enumerate(counts):
-        x0 = xmin + i * width
-        x1 = x0 + width
-        px0, py0 = mp(x0, 0.0)
-        px1, py1 = mp(x1, count)
-        canvas.rect(px0 + 1, py1, px1 - 1, py0, (170, 205, 235))
-    canvas.save(path)
+
+    fig, ax = plt.subplots(figsize=(8, 4.8))
+    ax.hist(
+        values,
+        bins=bins,
+        range=(xmin, xmax),
+        color="#8fbdd8",
+        edgecolor="white",
+        linewidth=0.6,
+    )
+    ax.axvline(mean(values), color="#a23b3b", linewidth=1.5, label="Mean")
+    tidy_axes(ax, title, xlabel, "Frequency", grid_axis="y")
+    ax.legend(frameon=False)
+    save_figure(fig, path)
 
 
-def save_scatter(xs, ys, path, max_points=4000):
-    canvas = Canvas()
-    if len(xs) > max_points:
-        step = len(xs) // max_points
-        xs = xs[::step]
-        ys = ys[::step]
+def save_scatter(xs, ys, path, title, xlabel, ylabel, max_points=4000):
+    xs, ys = downsample_pair(xs, ys, max_points)
     xmin, xmax = quantile(xs, 0.005), quantile(xs, 0.995)
     ymin, ymax = quantile(ys, 0.005), quantile(ys, 0.995)
     if xmax <= xmin:
         xmax = xmin + 1.0
     if ymax <= ymin:
         ymax = ymin + 1.0
-    mp, left, right, top, bottom = mapper(xmin, xmax, ymin, ymax)
-    canvas.line(left, canvas.height - bottom, canvas.width - right, canvas.height - bottom, (80, 80, 80), 2)
-    canvas.line(left, top, left, canvas.height - bottom, (80, 80, 80), 2)
-    for x, y in zip(xs, ys):
-        if xmin <= x <= xmax and ymin <= y <= ymax:
-            px, py = mp(x, y)
-            canvas.rect(px - 1, py - 1, px + 1, py + 1, (30, 120, 160))
-    canvas.save(path)
+
+    fig, ax = plt.subplots(figsize=(6.4, 5.4))
+    ax.scatter(xs, ys, s=9, alpha=0.35, color="#277c9f", edgecolors="none")
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    tidy_axes(ax, title, xlabel, ylabel)
+    save_figure(fig, path)
 
 
-def save_comparison_plot(labels, values, path):
-    canvas = Canvas()
-    n = len(values)
-    ymax = max(values) * 1.2 if max(values) > 0 else 1.0
-    mp, left, right, top, bottom = mapper(-0.5, n - 0.5, 0.0, ymax)
-    canvas.line(left, canvas.height - bottom, canvas.width - right, canvas.height - bottom, (80, 80, 80), 2)
-    canvas.line(left, top, left, canvas.height - bottom, (80, 80, 80), 2)
-    for i, value in enumerate(values):
-        x0, y0 = mp(i - 0.3, 0.0)
-        x1, y1 = mp(i + 0.3, value)
-        canvas.rect(x0, y1, x1, y0, (80, 150, 95))
-    canvas.save(path)
+def save_comparison_plot(labels, values, path, title, ylabel):
+    x_positions = list(range(len(values)))
+
+    fig, ax = plt.subplots(figsize=(7, 4.6))
+    ax.bar(x_positions, values, width=0.62, color="#619b71")
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(labels)
+    ax.set_ylim(bottom=0.0)
+    tidy_axes(ax, title, "Method", ylabel, grid_axis="y")
+    save_figure(fig, path)
 
 
 # parts 1 and 2: finite-state mcmc
@@ -387,9 +316,11 @@ def run_part1_mh(A=8.0, m=10, total=100_000, burn=10_000):
     print()
 
     save_grouped_bar_plot(
+        [str(i) for i in range(m + 1)],
         empirical,
         exact,
         os.path.join(PICS, "ex6_part1_truncated_poisson.png"),
+        "Truncated Poisson probabilities",
     )
 
     return {
@@ -546,7 +477,13 @@ def run_part2_methods(A1=4.0, A2=4.0, m=10, total=200_000, burn=20_000):
         n_kept,
         f"{direct_acc:.6f}",
     )
-    save_heatmap(states, direct["empirical"], os.path.join(PICS, "ex6_part2a_direct_mh_heatmap.png"), m)
+    save_heatmap(
+        states,
+        direct["empirical"],
+        os.path.join(PICS, "ex6_part2a_direct_mh_heatmap.png"),
+        m,
+        "Direct MH empirical probabilities",
+    )
 
     coord_counts, acc_i, acc_j = run_coordinate_joint_mh(A1, A2, m, total, burn)
     coord = summarize_joint_method(
@@ -557,7 +494,13 @@ def run_part2_methods(A1=4.0, A2=4.0, m=10, total=200_000, burn=20_000):
         n_kept,
         f"i={acc_i:.6f}, j={acc_j:.6f}",
     )
-    save_heatmap(states, coord["empirical"], os.path.join(PICS, "ex6_part2b_coordinate_mh_heatmap.png"), m)
+    save_heatmap(
+        states,
+        coord["empirical"],
+        os.path.join(PICS, "ex6_part2b_coordinate_mh_heatmap.png"),
+        m,
+        "Coordinatewise MH empirical probabilities",
+    )
 
     gibbs_counts = run_gibbs_joint(A1, A2, m, total, burn)
     gibbs = summarize_joint_method(
@@ -568,7 +511,13 @@ def run_part2_methods(A1=4.0, A2=4.0, m=10, total=200_000, burn=20_000):
         n_kept,
         "always accepts",
     )
-    save_heatmap(states, gibbs["empirical"], os.path.join(PICS, "ex6_part2c_gibbs_heatmap.png"), m)
+    save_heatmap(
+        states,
+        gibbs["empirical"],
+        os.path.join(PICS, "ex6_part2c_gibbs_heatmap.png"),
+        m,
+        "Gibbs sampler empirical probabilities",
+    )
 
     rows = []
     for result in [direct, coord, gibbs]:
@@ -592,6 +541,8 @@ def run_part2_methods(A1=4.0, A2=4.0, m=10, total=200_000, burn=20_000):
         ["Direct", "Coord", "Gibbs"],
         [direct["tv"], coord["tv"], gibbs["tv"]],
         os.path.join(PICS, "ex6_part2_method_comparison.png"),
+        "Part 2 total variation distance",
+        "TV distance",
     )
 
     return [direct, coord, gibbs]
@@ -762,11 +713,38 @@ def run_part3_bayes():
         print(f"n = {n} final acceptance rate = {out['acceptance']:.6f}")
         print()
 
-        save_line_plot(out["theta"], os.path.join(PICS, f"ex6_part3_n{n}_theta_trace.png"))
-        save_line_plot(out["psi"], os.path.join(PICS, f"ex6_part3_n{n}_psi_trace.png"))
-        save_histogram(out["theta"], os.path.join(PICS, f"ex6_part3_n{n}_theta_hist.png"))
-        save_histogram(out["psi"], os.path.join(PICS, f"ex6_part3_n{n}_psi_hist.png"))
-        save_scatter(out["theta"], out["psi"], os.path.join(PICS, f"ex6_part3_n{n}_joint.png"))
+        save_line_plot(
+            out["theta"],
+            os.path.join(PICS, f"ex6_part3_n{n}_theta_trace.png"),
+            f"Theta trace, n = {n}",
+            "theta",
+        )
+        save_line_plot(
+            out["psi"],
+            os.path.join(PICS, f"ex6_part3_n{n}_psi_trace.png"),
+            f"Psi trace, n = {n}",
+            "psi",
+        )
+        save_histogram(
+            out["theta"],
+            os.path.join(PICS, f"ex6_part3_n{n}_theta_hist.png"),
+            f"Theta posterior, n = {n}",
+            "theta",
+        )
+        save_histogram(
+            out["psi"],
+            os.path.join(PICS, f"ex6_part3_n{n}_psi_hist.png"),
+            f"Psi posterior, n = {n}",
+            "psi",
+        )
+        save_scatter(
+            out["theta"],
+            out["psi"],
+            os.path.join(PICS, f"ex6_part3_n{n}_joint.png"),
+            f"Joint posterior samples, n = {n}",
+            "theta",
+            "psi",
+        )
 
         comparison_rows.append(
             [
@@ -804,13 +782,7 @@ def run_part3_bayes():
 
 
 def print_package_note():
-    packages = ["numpy", "scipy", "matplotlib"]
-    missing = [p for p in packages if importlib.util.find_spec(p) is None]
-    if missing:
-        print("Missing optional packages:", ", ".join(missing))
-        print("using the local mcmc / chi-square / png helper code")
-    else:
-        print("Optional scientific packages are available, but the file runs on its own anyway.")
+    print("Plots are made with matplotlib and saved as PNG files.")
     print()
 
 

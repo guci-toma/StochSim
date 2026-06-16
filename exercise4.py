@@ -18,6 +18,13 @@ except ImportError:
 
 
 PLOT_DIR = "pics"
+SEED = 12345
+SERVER_COUNT = 10
+ARRIVALS_PER_REPLICATION = 10_000
+REPLICATIONS = 10
+MEAN_INTERARRIVAL = 1.0
+MEAN_SERVICE = 8.0
+T_VALUE_95_10_REPS = 2.262
 
 
 def erlang_b(m, A):
@@ -27,15 +34,13 @@ def erlang_b(m, A):
 
 
 def ci_95(values):
-    # just using the t value for 10 reps
-    t_value = 2.262
     if np is not None:
         mean_value = float(np.mean(values))
         sd_value = float(np.std(values, ddof=1))
     else:
         mean_value = statistics.mean(values)
         sd_value = statistics.stdev(values)
-    half_width = t_value * sd_value / math.sqrt(len(values))
+    half_width = T_VALUE_95_10_REPS * sd_value / math.sqrt(len(values))
     return mean_value, mean_value - half_width, mean_value + half_width
 
 
@@ -93,11 +98,11 @@ def simulate(m, n_arrivals, next_interarrival, next_service):
 
 def run_case(case):
     reps = []
-    for _ in range(10):
+    for _ in range(REPLICATIONS):
         reps.append(
             simulate(
-                m=10,
-                n_arrivals=10_000,
+                m=SERVER_COUNT,
+                n_arrivals=ARRIVALS_PER_REPLICATION,
                 next_interarrival=case["arrival_fn"],
                 next_service=case["service_fn"],
             )
@@ -160,7 +165,7 @@ def print_table(results):
         print(" | ".join(row[i].ljust(widths[i]) for i in range(len(row))))
 
 
-def save_blocking_plot(results):
+def save_blocking_plot(results, exact_reference=None):
     if plt is None:
         print("matplotlib not available, skipping plot.")
         return
@@ -171,20 +176,38 @@ def save_blocking_plot(results):
     means = [r["mean"] for r in results]
     lower_errors = [r["mean"] - r["low"] for r in results]
     upper_errors = [r["high"] - r["mean"] for r in results]
+    x_positions = list(range(len(results)))
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.bar(labels, means, color="steelblue", alpha=0.85)
+    fig, ax = plt.subplots(figsize=(10.5, 5.2))
+    ax.bar(x_positions, means, color="#3b6ea8", alpha=0.9)
     ax.errorbar(
-        labels,
+        x_positions,
         means,
         yerr=[lower_errors, upper_errors],
         fmt="none",
-        ecolor="black",
+        ecolor="#222222",
         capsize=4,
+        linewidth=1.2,
     )
+    if exact_reference is not None:
+        ax.axhline(
+            exact_reference,
+            color="#a23b3b",
+            linestyle="--",
+            linewidth=1.3,
+            label="Erlang-B reference",
+        )
+        ax.legend(frameon=False)
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(labels, rotation=20, ha="right")
+    ax.set_xlabel("Case")
     ax.set_ylabel("Blocked fraction")
     ax.set_title("Exercise 4: blocking probability by case")
+    ax.set_ylim(bottom=0.0)
     ax.grid(axis="y", alpha=0.25)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
     fig.tight_layout()
     out_path = os.path.join(PLOT_DIR, "ex4_blocking_comparison.png")
     fig.savefig(out_path, dpi=150)
@@ -193,11 +216,11 @@ def save_blocking_plot(results):
 
 
 def main():
-    random.seed(12345)
+    random.seed(SEED)
 
-    m = 10
-    mean_interarrival = 1.0
-    mean_service = 8.0
+    m = SERVER_COUNT
+    mean_interarrival = MEAN_INTERARRIVAL
+    mean_service = MEAN_SERVICE
     A = mean_service / mean_interarrival
     exact = erlang_b(m, A)
 
@@ -214,16 +237,16 @@ def main():
             "arrival": "Poisson / exponential interarrival, mean 1",
             "service": "Exponential, mean 8",
             "notes": f"baseline; exact Erlang-B = {exact:.6f}",
-            "arrival_fn": lambda: exp_mean(1.0),
-            "service_fn": lambda: exp_mean(8.0),
+            "arrival_fn": lambda: exp_mean(MEAN_INTERARRIVAL),
+            "service_fn": lambda: exp_mean(MEAN_SERVICE),
         },
         {
             "case": "Part 2a",
             "arrival": "Erlang interarrival, k = 2, mean 1",
             "service": "Exponential, mean 8",
             "notes": "k = 2 was used as a simple less-variable renewal process",
-            "arrival_fn": lambda: erlang_arrival(mean=1.0, k=2),
-            "service_fn": lambda: exp_mean(8.0),
+            "arrival_fn": lambda: erlang_arrival(mean=MEAN_INTERARRIVAL, k=2),
+            "service_fn": lambda: exp_mean(MEAN_SERVICE),
         },
         {
             "case": "Part 2b",
@@ -231,47 +254,47 @@ def main():
             "service": "Exponential, mean 8",
             "notes": "more variable arrivals than the Poisson case",
             "arrival_fn": hyperexp_arrival,
-            "service_fn": lambda: exp_mean(8.0),
+            "service_fn": lambda: exp_mean(MEAN_SERVICE),
         },
         {
             "case": "Part 3a",
             "arrival": "Poisson / exponential interarrival, mean 1",
             "service": "Constant, S = 8",
             "notes": "same arrival rate and same mean service time",
-            "arrival_fn": lambda: exp_mean(1.0),
-            "service_fn": lambda: 8.0,
+            "arrival_fn": lambda: exp_mean(MEAN_INTERARRIVAL),
+            "service_fn": lambda: MEAN_SERVICE,
         },
         {
             "case": "Part 3b",
             "arrival": "Poisson / exponential interarrival, mean 1",
             "service": "Pareto Type I, k = 1.05, mean 8",
             "notes": "very heavy tail; finite runs converge slowly",
-            "arrival_fn": lambda: exp_mean(1.0),
-            "service_fn": lambda: pareto_service(mean=8.0, k=1.05),
+            "arrival_fn": lambda: exp_mean(MEAN_INTERARRIVAL),
+            "service_fn": lambda: pareto_service(mean=MEAN_SERVICE, k=1.05),
         },
         {
             "case": "Part 3c",
             "arrival": "Poisson / exponential interarrival, mean 1",
             "service": "Pareto Type I, k = 2.05, mean 8",
             "notes": "heavier-tailed than exponential, but less extreme than k = 1.05",
-            "arrival_fn": lambda: exp_mean(1.0),
-            "service_fn": lambda: pareto_service(mean=8.0, k=2.05),
+            "arrival_fn": lambda: exp_mean(MEAN_INTERARRIVAL),
+            "service_fn": lambda: pareto_service(mean=MEAN_SERVICE, k=2.05),
         },
         {
             "case": "Part 3d",
             "arrival": "Poisson / exponential interarrival, mean 1",
             "service": "Uniform(0, 16)",
             "notes": "extra service distribution with mean 8",
-            "arrival_fn": lambda: exp_mean(1.0),
-            "service_fn": lambda: random.uniform(0.0, 16.0),
+            "arrival_fn": lambda: exp_mean(MEAN_INTERARRIVAL),
+            "service_fn": lambda: random.uniform(0.0, 2.0 * MEAN_SERVICE),
         },
         {
             "case": "Part 3e",
             "arrival": "Poisson / exponential interarrival, mean 1",
             "service": "Gamma, shape 2, scale 4",
             "notes": "extra service distribution with mean 8",
-            "arrival_fn": lambda: exp_mean(1.0),
-            "service_fn": lambda: random.gammavariate(2.0, 4.0),
+            "arrival_fn": lambda: exp_mean(MEAN_INTERARRIVAL),
+            "service_fn": lambda: random.gammavariate(2.0, MEAN_SERVICE / 2.0),
         },
     ]
 
@@ -282,7 +305,7 @@ def main():
         print_case(result)
 
     print_table(results)
-    save_blocking_plot(results)
+    save_blocking_plot(results, exact)
 
 
 
